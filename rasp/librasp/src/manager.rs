@@ -12,8 +12,8 @@ use log::*;
 
 use crate::cpython::{python_attach, CPythonProbe, CPythonProbeState};
 use crate::golang::{golang_attach, GolangProbe, GolangProbeState};
-use crate::jvm::{java_attach, java_detach, JVMProbe, JVMProbeState};
-use crate::nodejs::{nodejs_attach, NodeJSProbe};
+use crate::jvm::{check_java_version, java_attach, java_detach, JVMProbe, JVMProbeState};
+use crate::nodejs::{check_nodejs_version, nodejs_attach, NodeJSProbe};
 use crate::php::{php_attach, PHPProbeState};
 use crate::{
     comm::{Control, EbpfMode, ProcessMode, RASPComm, ThreadMode, check_need_mount},
@@ -203,7 +203,7 @@ impl RASPManager {
             serde_json::from_str(message)?;
         let mut valid_messages: Vec<libraspserver::proto::PidMissingProbeConfig> = Vec::new();
         if messages.len() <= 0 {
-            for message_type in [6, 7, 8, 9, 12, 13, 14] {
+            for message_type in [6, 7, 8, 9, 12, 13, 14, 18] {
                 messages.push(PidMissingProbeConfig {
                     message_type,
                     data: ProbeConfigData::empty(message_type)?,
@@ -334,6 +334,14 @@ impl RASPManager {
                     Ok(true)
                 }
                 ProbeState::NotAttach => {
+                    if !runtime_info.version.is_empty() {
+                        match check_java_version(&runtime_info.version, pid) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                return Err(anyhow!(e));
+                            }
+                        }
+                    }
                     if self.can_copy(mnt_namespace) {
                         for from in JVMProbe::names().0.iter() {
                             self.copy_file_from_to_dest(from.clone(), root_dir.clone())?;
@@ -342,17 +350,27 @@ impl RASPManager {
                             self.copy_dir_from_to_dest(from.clone(), root_dir.clone())?;
                         }
                     }
+                    
                     java_attach(process_info.pid)
+
                 }
                 ProbeState::AttachedVersionNotMatch => {
-                    let mut diff_ns:bool = false;
+                    if !runtime_info.version.is_empty() {
+                        match check_java_version(&runtime_info.version, pid) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                return Err(anyhow!(e));
+                            }
+                        }
+                    }
+                    
                     match check_need_mount(mnt_namespace) {
                         Ok(value) => {
-                            diff_ns = value;
+                            let diff_ns = value;
                             if diff_ns {
                                 let to = format!("{}{}",root_dir.clone(), settings::RASP_JAVA_AGENT_BIN());
-                                self.copy_file_from_to_dest(settings::RASP_JAVA_JATTACH_BIN(), root_dir.clone());
-                                self.copy_file_from_to_dest(settings::RASP_JAVA_AGENT_BIN(), root_dir.clone());
+                                let _ = self.copy_file_from_to_dest(settings::RASP_JAVA_JATTACH_BIN(), root_dir.clone());
+                                let _ = self.copy_file_from_to_dest(settings::RASP_JAVA_AGENT_BIN(), root_dir.clone());
                                 info!("copy from jattach/SmithAgent.jar to {}", to.clone());
                             }
                         }
@@ -365,7 +383,7 @@ impl RASPManager {
                     }
                     
                     match java_detach(pid) {
-                        Ok(result) => {
+                        Ok(_) => {
                             if self.can_copy(mnt_namespace) {
                                 for from in JVMProbe::names().0.iter() {
                                     self.copy_file_from_to_dest(from.clone(), root_dir.clone())?;
@@ -473,6 +491,14 @@ impl RASPManager {
                 }
             },
             "NodeJS" => {
+                if !runtime_info.version.is_empty() {
+                    match check_nodejs_version(&runtime_info.version) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Err(anyhow!(e));
+                        }
+                    }
+                }
                 if self.can_copy(mnt_namespace) {
                     for from in NodeJSProbe::names().0.iter() {
                         self.copy_file_from_to_dest(from.clone(), root_dir.clone())?;
